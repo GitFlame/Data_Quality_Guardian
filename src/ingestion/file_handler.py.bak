@@ -1,0 +1,236 @@
+import pandas as pd
+import json
+from typing import Tuple, Dict, Any
+import os
+from pathlib import Path
+import chardet
+import docx
+import PyPDF2
+import xml.etree.ElementTree as ET
+import yaml
+
+import pandas as pd
+import json
+from typing import Tuple, Dict, Any
+import os
+from pathlib import Path
+import chardet
+import docx
+import PyPDF2
+import xml.etree.ElementTree as ET
+import yaml
+
+class FileHandler:
+    """Enhanced file handler with support for multiple file types"""
+    
+    SUPPORTED_EXTENSIONS = {
+        # Data files
+        '.csv': 'CSV',
+        '.xlsx': 'Excel',
+        '.xls': 'Excel',
+        '.json': 'JSON',
+        '.xml': 'XML',
+        '.yaml': 'YAML',
+        '.yml': 'YAML',
+        '.zip': 'ZIP',  # For folder analysis
+        
+        # Text files
+        '.txt': 'Text',
+        '.log': 'Text',
+        '.md': 'Text',
+        
+        # Document files
+        '.docx': 'Word',
+        '.doc': 'Word',
+        '.pdf': 'PDF',
+        
+        # Database files
+        '.db': 'SQLite',
+        '.sqlite': 'SQLite'
+    }
+    
+    EXCLUDED_EXTENSIONS = {
+        # Images
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp',
+        # Videos
+        '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm',
+        # Audio
+        '.mp3', '.wav', '.ogg',
+        # Stickers/GIFs
+        '.tgs', '.webp', '.apng'
+    }
+
+    @staticmethod
+    def validate_file(uploaded_file) -> Tuple[bool, str]:
+        """Validate uploaded file"""
+        if uploaded_file is None:
+            return False, "No file uploaded"
+        
+        file_extension = Path(uploaded_file.name).suffix.lower()
+        
+        if file_extension in FileHandler.EXCLUDED_EXTENSIONS:
+            return False, f"Media files are not supported: {file_extension}"
+        
+        if file_extension not in FileHandler.SUPPORTED_EXTENSIONS:
+            return False, f"Unsupported file type: {file_extension}. Supported: {', '.join(FileHandler.SUPPORTED_EXTENSIONS.keys())}"
+        
+        # Size limits
+        max_size = 200 * 1024 * 1024  # 200MB for zip files
+        if file_extension != '.zip':
+            max_size = 100 * 1024 * 1024  # 100MB for other files
+        
+        if uploaded_file.size > max_size:
+            return False, f"File too large (max {max_size // (1024*1024)}MB)"
+        
+        return True, "File valid"
+    
+    @staticmethod
+    def parse_file(uploaded_file) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Parse uploaded file and return DataFrame with metadata"""
+        file_extension = Path(uploaded_file.name).suffix.lower()
+        file_type = FileHandler.SUPPORTED_EXTENSIONS.get(file_extension)
+        
+        try:
+            if file_type == 'CSV':
+                df, file_metadata = FileHandler._parse_csv(uploaded_file)
+            elif file_type == 'Excel':
+                df, file_metadata = FileHandler._parse_excel(uploaded_file)
+            elif file_type == 'JSON':
+                df, file_metadata = FileHandler._parse_json(uploaded_file)
+            elif file_type == 'XML':
+                df, file_metadata = FileHandler._parse_xml(uploaded_file)
+            elif file_type == 'YAML':
+                df, file_metadata = FileHandler._parse_yaml(uploaded_file)
+            elif file_type == 'Text':
+                df, file_metadata = FileHandler._parse_text(uploaded_file)
+            elif file_type == 'Word':
+                df, file_metadata = FileHandler._parse_docx(uploaded_file)
+            elif file_type == 'PDF':
+                df, file_metadata = FileHandler._parse_pdf(uploaded_file)
+            else:
+                raise ValueError(f"Unsupported file type: {file_type}")
+            
+            # Add common metadata
+            metadata = {
+                'filename': uploaded_file.name,
+                'file_size': uploaded_file.size,
+                'file_type': file_extension,
+                'row_count': len(df),
+                'column_count': len(df.columns)
+            }
+            metadata.update(file_metadata)
+            
+            return df, metadata
+            
+        except Exception as e:
+            raise Exception(f"Error parsing file {uploaded_file.name}: {str(e)}")
+
+    @staticmethod
+    def _parse_csv(file) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Parse CSV file with encoding detection"""
+        file.seek(0)
+        raw_data = file.read()
+        encoding = chardet.detect(raw_data)['encoding']
+        
+        file.seek(0)
+        df = pd.read_csv(file, encoding=encoding)
+        return df, {'encoding': encoding}
+    
+    @staticmethod
+    def _parse_excel(file) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Parse Excel file"""
+        df = pd.read_excel(file)
+        sheets = pd.ExcelFile(file).sheet_names
+        return df, {'sheets': sheets}
+
+    @staticmethod
+    def _parse_json(file) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Parse JSON file"""
+        data = json.load(file)
+        if isinstance(data, list):
+            df = pd.json_normalize(data)
+        else:
+            df = pd.DataFrame([data])
+        return df, {'structure': 'array' if isinstance(data, list) else 'object'}
+
+    @staticmethod
+    def _parse_xml(file) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Parse XML file"""
+        tree = ET.parse(file)
+        root = tree.getroot()
+        data = []
+        
+        for child in root:
+            row = {}
+            for elem in child:
+                row[elem.tag] = elem.text
+            data.append(row)
+            
+        df = pd.DataFrame(data)
+        return df, {'root_tag': root.tag}
+
+    @staticmethod
+    def _parse_yaml(file) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Parse YAML file"""
+        data = yaml.safe_load(file)
+        if isinstance(data, list):
+            df = pd.DataFrame(data)
+        else:
+            df = pd.DataFrame([data])
+        return df, {}
+
+    @staticmethod
+    def _parse_text(file) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Parse text file"""
+        file.seek(0)
+        lines = file.read().decode('utf-8').splitlines()
+        df = pd.DataFrame({'line': lines})
+        return df, {'line_count': len(lines)}
+
+    @staticmethod
+    def _parse_docx(file) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Parse Word document"""
+        doc = docx.Document(file)
+        paragraphs = [p.text for p in doc.paragraphs]
+        df = pd.DataFrame({'paragraph': paragraphs})
+        return df, {'paragraph_count': len(paragraphs)}
+
+    @staticmethod
+    def _parse_pdf(file) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Parse PDF file"""
+        pdf = PyPDF2.PdfReader(file)
+        pages = []
+        for page in pdf.pages:
+            pages.append(page.extract_text())
+        df = pd.DataFrame({'page': pages})
+        return df, {'page_count': len(pages)}
+                    
+            elif file_extension == '.xlsx':
+                uploaded_file.seek(0)
+                df = pd.read_excel(uploaded_file)
+                
+            elif file_extension == '.json':
+                uploaded_file.seek(0)
+                data = json.load(uploaded_file)
+                if isinstance(data, list):
+                    df = pd.json_normalize(data)
+                else:
+                    df = pd.DataFrame([data])
+            else:
+                raise ValueError(f"Unsupported file type: {file_extension}")
+            
+            # Clean column names (remove extra spaces, special characters)
+            df.columns = df.columns.str.strip()
+            
+            metadata.update({
+                'row_count': len(df),
+                'column_count': len(df.columns),
+                'columns': list(df.columns),
+                'dtypes': {col: str(dtype) for col, dtype in df.dtypes.items()},
+                'memory_usage_mb': df.memory_usage(deep=True).sum() / (1024 * 1024)
+            })
+            
+            return df, metadata
+            
+        except Exception as e:
+            raise Exception(f"Error parsing file {uploaded_file.name}: {str(e)}")
